@@ -108,6 +108,8 @@
     "consignet": {
       "auth_type": "two_step",
       "uses_chrome_channel": false,
+      "known_failure": true,
+      "known_failure_reason": "reCAPTCHA v3 rejeita login automatizado (falha externa permanente — ver docs/OPERACAO_V1.md); retry só desperdiça tempo",
       "selectors": {
         "step1_username": { "type": "css", "value": "#login-username" },
         "step1_submit":   { "type": "css", "value": "#btn-continue" },
