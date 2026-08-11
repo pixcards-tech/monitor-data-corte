@@ -12,6 +12,9 @@ Variáveis de ambiente:
     DAILY_COLLECTION_INTERVAL_MINUTES    Pausa entre processadoras (default: 1)
     DAILY_COLLECTION_MAX_RETRIES         Nº de retries por processadora (default: 2)
     DAILY_COLLECTION_RETRY_DELAY_MINUTES Pausa antes de cada retry (default: 60)
+    DAILY_COLLECTION_RETRY_JOIN_TIMEOUT_MINUTES
+                                         Teto de espera pelos retries antes de
+                                         abandonar threads travadas (default: 240)
 
 Critério de retry:
     - status == "error" (todos os convênios falharam) → retenta
@@ -72,11 +75,27 @@ def _env_int(key: str, default: int) -> int:
 INTERVAL_MINUTES: int = _env_int("DAILY_COLLECTION_INTERVAL_MINUTES", 1)
 MAX_RETRIES: int = _env_int("DAILY_COLLECTION_MAX_RETRIES", 2)
 RETRY_DELAY_MINUTES: int = _env_int("DAILY_COLLECTION_RETRY_DELAY_MINUTES", 60)
+# Teto de espera pelas threads de retry. Ciclo legítimo máximo: 2 retries ×
+# (60min de delay + execução) ≈ 3h. Estourou → a thread travou (ex.: Playwright
+# pendurado, incidente de 24/07/2026) e é abandonada para o dia ainda fechar
+# com resumo + e-mail.
+RETRY_JOIN_TIMEOUT_MINUTES: int = _env_int("DAILY_COLLECTION_RETRY_JOIN_TIMEOUT_MINUTES", 240)
 
 # Serializa a execução real de scrapers/storage entre threads de retry.
 # As esperas (time.sleep do delay) ficam de fora do lock e correm em paralelo;
 # apenas a chamada ao orchestrator é serializada.
 _exec_lock = threading.Lock()
+
+
+def _aguardar_retries(threads: list[threading.Thread], timeout_s: float) -> list[str]:
+    """Join com deadline global compartilhado. Retorna os nomes das ainda vivas."""
+    deadline = time.monotonic() + timeout_s
+    for t in threads:
+        restante = deadline - time.monotonic()
+        if restante <= 0:
+            break
+        t.join(timeout=restante)
+    return [t.name for t in threads if t.is_alive()]
 
 
 # ── Rastreamento de resultado por processadora ────────────────────────────────
@@ -411,12 +430,20 @@ def main() -> int:
                 target=_retry_loop_processadora,
                 args=(orchestrator, resultados[processadora_key], retry_delay_segundos, MAX_RETRIES),
                 name=f"retry-{processadora_key}",
+                # Daemon: uma thread travada (scraper pendurado) não pode impedir
+                # o processo de encerrar depois que o dia é fechado.
+                daemon=True,
             )
             threads_retry.append(t)
             t.start()
 
-        for t in threads_retry:
-            t.join()
+        abandonadas = _aguardar_retries(threads_retry, RETRY_JOIN_TIMEOUT_MINUTES * 60)
+        if abandonadas:
+            logger.error(
+                "[Runner] %d thread(s) de retry travada(s) após %d min — abandonando: %s. "
+                "Prosseguindo com o resumo e o e-mail do dia.",
+                len(abandonadas), RETRY_JOIN_TIMEOUT_MINUTES, ", ".join(abandonadas),
+            )
 
     # E-mail diário ÚNICO consolidando TODAS as processadoras desta rodada
     # (inclui o resultado final de cada uma após os retries).
