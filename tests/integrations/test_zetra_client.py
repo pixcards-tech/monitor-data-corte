@@ -160,10 +160,12 @@ def test_cod_001_levanta_erro_de_credencial(monkeypatch):
         ZetraClient(_config()).consultar_parametros("PIX_CARD-SERRA")
 
 
-def test_cod_362_levanta_erro_de_ip(monkeypatch):
+@pytest.mark.parametrize("cod", ["362", "002"])
+def test_cod_de_ip_bloqueado_levanta_erro_tipado(monkeypatch, cod):
+    # 362 = documentado; 002 = observado na prática ("IP INVALIDO PARA O USUARIO").
     monkeypatch.setattr(
         zetra_client.requests, "post",
-        lambda *a, **k: _RespostaFake(_resposta_xml(sucesso="false", cod="362")),
+        lambda *a, **k: _RespostaFake(_resposta_xml(sucesso="false", cod=cod)),
     )
     with pytest.raises(ZetraIpBloqueadoError):
         ZetraClient(_config()).consultar_parametros("PIX_CARD-SERRA")

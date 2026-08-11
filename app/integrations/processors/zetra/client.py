@@ -170,9 +170,11 @@ class ZetraClient:
             raise ZetraCredencialError(
                 f"codRetorno 001 — credencial Zetra inválida ({mensagem or 'sem mensagem'})"
             )
-        if cod == "362":
+        # 362 é o código documentado para IP não autorizado; 002 ("IP INVALIDO
+        # PARA O USUARIO INFORMADO") é o observado na prática (VM, 11/08/2026).
+        if cod in ("362", "002"):
             raise ZetraIpBloqueadoError(
-                f"codRetorno 362 — IP não autorizado no Centralizador "
+                f"codRetorno {cod} — IP não autorizado no Centralizador "
                 f"({mensagem or 'sem mensagem'}). Solicitar liberação do IP à Zetra."
             )
 

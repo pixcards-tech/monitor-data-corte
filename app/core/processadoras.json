@@ -122,7 +122,9 @@
       "integration_type": "api",
       "api_collector": "zetra",
       "api_origem": "api_oficial",
-      "uses_chrome_channel": false
+      "uses_chrome_channel": false,
+      "known_failure": true,
+      "known_failure_reason": "IP da VM (216.238.125.252) aguardando liberação na whitelist da Zetra (codRetorno 002) — remover esta flag quando a Zetra confirmar"
     }
   },
   "convenios": {
