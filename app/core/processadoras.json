@@ -116,6 +116,13 @@
         "step2_password": { "type": "css", "value": "#login-password" },
         "step2_submit":   { "type": "css", "value": "[id='btn-log in']" }
       }
+    },
+    "zetra": {
+      "auth_type": "login_password",
+      "integration_type": "api",
+      "api_collector": "zetra",
+      "api_origem": "api_oficial",
+      "uses_chrome_channel": false
     }
   },
   "convenios": {
@@ -204,13 +211,13 @@
       "nome": "Cotia-SP",
       "processadora": "consiglog",
       "credential_env_key": "CONSIGLOG_COTIA_SP",
-      "base_url": "https://saec.consiglog.com.br/Login.aspx"
+      "base_url": "https://saec.consigx.com.br/Login.aspx"
     },
     "duque_de_caxias_rj": {
       "nome": "Duque de Caxias-RJ",
       "processadora": "consiglog",
       "credential_env_key": "CONSIGLOG_DUQUE_DE_CAXIAS_RJ",
-      "base_url": "https://saec.consiglog.com.br/Login.aspx",
+      "base_url": "https://saec.consigx.com.br/Login.aspx",
       "orgao_sigla": "RJ - DUQUE CAXIAS",
       "competencia_offset": 1
     },
@@ -218,7 +225,7 @@
       "nome": "IPMDC",
       "processadora": "consiglog",
       "credential_env_key": "CONSIGLOG_DUQUE_DE_CAXIAS_RJ",
-      "base_url": "https://saec.consiglog.com.br/Login.aspx",
+      "base_url": "https://saec.consigx.com.br/Login.aspx",
       "orgao_sigla": "RJ - IPMDC",
       "competencia_offset": 1
     },
@@ -298,6 +305,47 @@
       "nome": "Itaquaquecetuba",
       "processadora": "safeconsig",
       "credential_env_key": "SAFECONSIG_PROD_ITAQUAQUECETUBA"
+    },
+    "embudasartes": {
+      "nome": "PREF DE EMBU DAS ARTES - SP",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-EMBUDASARTES"
+    },
+    "linhares": {
+      "nome": "PREF DE LINHARES - ES",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-LINHARES"
+    },
+    "governo_es": {
+      "nome": "GOV ESPIRITO SANTO",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-ES"
+    },
+    "aracruz": {
+      "nome": "PREF DE ARACRUZ - ES",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-ARACRUZ"
+    },
+    "maua": {
+      "nome": "PREF DE MAUA - SP",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-MAUA"
+    },
+    "salto": {
+      "nome": "PREF DE SALTO - SP",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-SALTO"
+    },
+    "serra": {
+      "nome": "PREF DE SERRA - ES",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-SERRA"
+    },
+    "novalima": {
+      "nome": "PREF DE NOVA LIMA - MG",
+      "processadora": "zetra",
+      "zetra_convenio": "PIX_CARD-NOVALIMA",
+      "servico_codigo": "044"
     }
   }
 }

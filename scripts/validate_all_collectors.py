@@ -55,12 +55,16 @@ class _Resultado:
         self.detalhe = detalhe
 
 
-# ── Execução de um coletor API (SafeConsig) ───────────────────────────────────
+# ── Execução de um coletor API (SafeConsig, Zetra, ...) ───────────────────────
 
 def _run_api_collector(convenio_key: str, convenio_config: dict) -> dict:
-    from app.integrations.processors.safeconsig.collector import SafeConsigApiCollector
-    collector = SafeConsigApiCollector()
-    return collector.run(convenio_key, convenio_config)
+    from app.core.loader import load_processadoras_config
+    from app.services.coleta_service import _build_api_collector
+
+    processadora_config = load_processadoras_config()["processadoras"][
+        convenio_config["processadora"]
+    ]
+    return _build_api_collector(processadora_config).run(convenio_key, convenio_config)
 
 
 # ── Execução de um scraper ────────────────────────────────────────────────────

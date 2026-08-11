@@ -17,9 +17,28 @@ from app.utils.dates import normalizar_data_corte
 logger = logging.getLogger(__name__)
 
 
-def _run_api_collector(convenio_key: str, convenio_config: dict) -> dict:
-    from app.integrations.processors.safeconsig.collector import SafeConsigApiCollector
-    return SafeConsigApiCollector().run(convenio_key, convenio_config)
+def _build_api_collector(processadora_config: dict):
+    """Instancia o collector de API declarado em `api_collector` (default: safeconsig).
+
+    UMA instância por lote: collectors com estado dependem disso — ex.: o abort
+    de lote da Zetra (001/362), que marca os convênios restantes como falha sem
+    chamar a API.
+    """
+    nome = processadora_config.get("api_collector", "safeconsig")
+    if nome == "zetra":
+        from app.integrations.processors.zetra.collector import ZetraApiCollector
+        return ZetraApiCollector()
+    if nome == "safeconsig":
+        from app.integrations.processors.safeconsig.collector import SafeConsigApiCollector
+        return SafeConsigApiCollector()
+    raise ValueError(f"api_collector desconhecido: {nome!r}")
+
+
+def _run_api_collector(convenio_key: str, convenio_config: dict, collector=None) -> dict:
+    if collector is None:
+        from app.integrations.processors.safeconsig.collector import SafeConsigApiCollector
+        collector = SafeConsigApiCollector()
+    return collector.run(convenio_key, convenio_config)
 
 
 def build_auth_strategy(processadora_config: dict, convenio_config: dict):
@@ -77,7 +96,9 @@ def executar_coleta(convenio_key: str) -> dict:
     processadora_config = config["processadoras"][processadora_key]
 
     if processadora_config.get("integration_type") == "api":
-        resultado = _run_api_collector(convenio_key, convenio_config)
+        resultado = _run_api_collector(
+            convenio_key, convenio_config, _build_api_collector(processadora_config)
+        )
     else:
         auth_strategy = build_auth_strategy(processadora_config, convenio_config)
         scraper = build_scraper(
@@ -176,6 +197,7 @@ def executar_coleta_lote(processadora_key: str, convenio_filter: str | None = No
 
     resultados_convenios: list[dict] = []
     records_consolidados: list[dict] = []
+    api_collector = None  # 1 instância por lote (estado de abort — ver _build_api_collector)
 
     for convenio_key, convenio_config in convenios_da_processadora.items():
         known_failure = bool(
@@ -197,7 +219,9 @@ def executar_coleta_lote(processadora_key: str, convenio_filter: str | None = No
             })
             continue
         if processadora_config.get("integration_type") == "api":
-            resultado = _run_api_collector(convenio_key, convenio_config)
+            if api_collector is None:
+                api_collector = _build_api_collector(processadora_config)
+            resultado = _run_api_collector(convenio_key, convenio_config, api_collector)
         else:
             try:
                 auth_strategy = build_auth_strategy(processadora_config, convenio_config)
@@ -256,8 +280,14 @@ def executar_coleta_lote(processadora_key: str, convenio_filter: str | None = No
                 "data_corte": normalizar_data_corte(
                     record.get("data_corte"), record.get("mes_atual"), coletado_em
                 ),
-                # Estimativa (API, ex.: SafeConsig) vs oficial (scraper de portal).
-                "origem": "api_estimativa" if processadora_config.get("integration_type") == "api" else "scraper",
+                # Origem do dado: scraper de portal, ou API — que pode ser
+                # estimativa (SafeConsig, default) ou parâmetro oficial da
+                # processadora (Zetra: api_origem="api_oficial" no JSON).
+                "origem": (
+                    processadora_config.get("api_origem", "api_estimativa")
+                    if processadora_config.get("integration_type") == "api"
+                    else "scraper"
+                ),
             })
 
     return resumir_lote(processadora_key, resultados_convenios, records_consolidados)
