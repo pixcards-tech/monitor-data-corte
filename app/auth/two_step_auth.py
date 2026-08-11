@@ -78,8 +78,31 @@ class TwoStepAuthStrategy(BaseAuthStrategy):
         page.wait_for_timeout(self.recaptcha_settle_ms)
         submit.click()
 
+    def _fechar_popup_se_visivel(self, page: Page, momento: str, timeout_ms: int = 2500) -> None:
+        """Fecha um modal de aviso do portal, se configurado e visível.
+
+        Opt-in via selector `popup_dismiss` (ex.: aviso institucional do
+        ConsigLog/ConsigX que cobre a tela e intercepta os cliques do login —
+        sem fechar, o submit não chega no botão e o portal conta tentativa
+        errada). Sem o selector configurado, é no-op.
+        """
+        if "popup_dismiss" not in self.selectors:
+            return
+        btn = self._locator(page, "popup_dismiss")
+        try:
+            btn.wait_for(state="visible", timeout=timeout_ms)
+        except Exception:
+            return  # aviso não apareceu — fluxo normal
+        logger.info("[TwoStepAuth] Aviso do portal visível (%s) — fechando.", momento)
+        try:
+            btn.click()
+            page.wait_for_timeout(500)
+        except Exception:
+            logger.warning("[TwoStepAuth] Não conseguiu fechar o aviso (%s) — seguindo.", momento)
+
     def authenticate(self, page: Page, target_url: str, timeout: int) -> None:
         page.goto(target_url, wait_until="domcontentloaded", timeout=timeout)
+        self._fechar_popup_se_visivel(page, "pré-login")
 
         # Etapa 1: username → CONTINUE
         username_field = self._locator(page, "step1_username")
@@ -88,6 +111,9 @@ class TwoStepAuthStrategy(BaseAuthStrategy):
 
         submit1 = self._locator(page, "step1_submit")
         self._clicar_quando_habilitar(page, submit1, "etapa 1", timeout)
+
+        # O aviso pode reaparecer na troca de tela e cobrir o campo de senha.
+        self._fechar_popup_se_visivel(page, "entre etapas")
 
         # Aguarda a segunda tela (campo de senha) aparecer.
         password_field = self._locator(page, "step2_password")

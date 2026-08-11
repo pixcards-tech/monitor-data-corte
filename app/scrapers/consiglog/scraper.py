@@ -1,7 +1,13 @@
-"""Scraper para o portal ConsigLog / SAEC (saec.consiglog.com.br).
+"""Scraper para o portal ConsigLog / SAEC.
 
 Tecnologia: ASP.NET WebForms (.aspx).
 Convênios: Cotia-SP, Duque de Caxias-RJ.
+
+Migração 08/2026: o portal mudou de saec.consiglog.com.br para
+saec.consigx.com.br (o DNS antigo morreu) e passou a exibir um modal de AVISO
+institucional (`ucAjaxModalPopup1`) que cobre a tela e bloqueia a coleta.
+O aviso é fechado em três pontos: no login (via popup_dismiss do TwoStepAuth),
+após o login e antes de cada leitura da tabela de prazos.
 """
 from __future__ import annotations
 
@@ -32,15 +38,22 @@ _LOGIN_ERROR_SELECTORS = ("[id*='lblErro']", "[class*='error']", "[class*='alert
 # Palavras que caracterizam erro REAL de login (não apenas estar numa URL .aspx).
 _LOGIN_ERROR_KEYWORDS = ("nválid", "inválid", "xpirad", "ncorret", "tativa", "bloque")
 
+# Botão de confirmação do modal "Usuário já logado" (sessão em outro terminal).
+_BTN_SESSAO_ANTERIOR = "#ucAjaxModalPopupConfirmacao1_btnConfirmarPopup"
+# Botão de OK do modal de AVISO institucional (ConsigX, 08/2026) — cobre a tela
+# e impede a leitura da tabela de prazos enquanto estiver aberto.
+_BTN_AVISO = "#ucAjaxModalPopup1_btnConfirmarPopup"
+
 
 class ConsiglogScraper(BaseScraper):
     def authenticate(self) -> None:
         super().authenticate()
+        self._fechar_aviso("pós-login")
         # ConsigLog exibe um modal AJAX "Usuário já logado" quando há sessão
         # aberta em outro terminal. Espera o botão de confirmação RENDERIZAR
         # (timeout curto) antes de decidir que não há popup — is_visible() não
         # espera, e o modal costuma aparecer alguns ms após o login.
-        confirm_btn = self.page.locator("#ucAjaxModalPopupConfirmacao1_btnConfirmarPopup")
+        confirm_btn = self.page.locator(_BTN_SESSAO_ANTERIOR)
         try:
             confirm_btn.wait_for(state="visible", timeout=3000)
         except Exception:
@@ -57,6 +70,22 @@ class ConsiglogScraper(BaseScraper):
         except Exception:
             pass
         logger.info("[ConsigLog] Desconexão confirmada. URL: %s", self.page.url)
+
+    def _fechar_aviso(self, momento: str, timeout_ms: int = 2000) -> bool:
+        """Fecha o modal de AVISO institucional se estiver visível. Nunca lança."""
+        btn = self.page.locator(_BTN_AVISO)
+        try:
+            btn.wait_for(state="visible", timeout=timeout_ms)
+        except Exception:
+            return False
+        logger.info("[ConsigLog] Aviso do portal visível (%s) — fechando.", momento)
+        try:
+            btn.click()
+            self.page.wait_for_timeout(500)
+            return True
+        except Exception:
+            logger.warning("[ConsigLog] Não conseguiu fechar o aviso (%s).", momento)
+            return False
 
     def validate_access(self) -> None:
         if self.page is None:
@@ -121,6 +150,7 @@ class ConsiglogScraper(BaseScraper):
         return self._extrair_prazos()
 
     def _selecionar_orgao(self) -> None:
+        self._fechar_aviso("seleção de órgão")
         tabela = self.page.locator("table#gvOrgao")
         tabela.wait_for(state="visible", timeout=self.timeout)
 
@@ -149,6 +179,9 @@ class ConsiglogScraper(BaseScraper):
         ultimo_erro = None
         for tentativa in range(3):
             try:
+                # O aviso pode (re)aparecer sobre a tela de prazos — sem fechar,
+                # a tabela nunca fica "visible" e o wait_for estoura.
+                self._fechar_aviso(f"extração (tentativa {tentativa + 1})")
                 tabela = self.page.locator("#body_Prazos_gvPrazos")
                 tabela.wait_for(state="visible", timeout=20000)
 

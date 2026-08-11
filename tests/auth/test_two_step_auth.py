@@ -187,6 +187,50 @@ def test_networkidle_que_nunca_ocorre_nao_derruba_o_login(monkeypatch):
     assert chamada[2] == 30_000
 
 
+# ───────────────── popup_dismiss opcional (aviso do portal) ──────────────────
+
+SELECTORS_COM_POPUP = {
+    **SELECTORS,
+    "popup_dismiss": {"type": "css", "value": "#btn-fechar-aviso"},
+}
+
+
+def _rodar_com_popup(monkeypatch, selectors):
+    rec = _Rec()
+    page = _FakePage(rec)
+    monkeypatch.setattr("app.auth.two_step_auth.expect", _fake_expect_factory(rec))
+    strat = TwoStepAuthStrategy(
+        "user123", "secret456", selectors,
+        key_delay_ms=1, blur_settle_ms=7, recaptcha_settle_ms=11, enable_timeout_ms=4000,
+    )
+    strat.authenticate(page, "https://portal.local/auth/login", timeout=5000)
+    return rec.events
+
+
+def test_popup_dismiss_configurado_e_visivel_fecha_antes_de_digitar(monkeypatch):
+    # _FakeLocator.wait_for sempre sucede → o aviso "está visível" nos 2 pontos.
+    events = _rodar_com_popup(monkeypatch, SELECTORS_COM_POPUP)
+    cliques_aviso = [i for i, e in enumerate(events)
+                     if e[0] == "click" and e[1] == "#btn-fechar-aviso"]
+    assert len(cliques_aviso) == 2, "aviso deve ser fechado no pré-login e entre etapas"
+
+    i_type_user = next(i for i, e in enumerate(events)
+                       if e[0] == "press_sequentially" and e[1] == "#login-username")
+    assert cliques_aviso[0] < i_type_user, "1º fechamento vem antes de digitar o usuário"
+
+    i_click_cont = next(i for i, e in enumerate(events)
+                        if e[0] == "click" and e[1] == "#btn-continue")
+    i_type_pwd = next(i for i, e in enumerate(events)
+                      if e[0] == "press_sequentially" and e[1] == "#login-password")
+    assert i_click_cont < cliques_aviso[1] < i_type_pwd, \
+        "2º fechamento fica entre o CONTINUE e a digitação da senha"
+
+
+def test_sem_popup_dismiss_configurado_nada_muda(monkeypatch):
+    events = _rodar_com_popup(monkeypatch, SELECTORS)
+    assert not any(e[0] == "click" and "aviso" in str(e[1]) for e in events)
+
+
 # ───────────────────── Camada B: integração HTML local ──────────────────────
 
 _FIXTURE_HTML = """<!doctype html>

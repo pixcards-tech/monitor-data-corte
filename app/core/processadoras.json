@@ -84,7 +84,8 @@
         "step1_username": { "type": "css", "value": "#txtLogin" },
         "step1_submit":   { "type": "css", "value": "#Entrar" },
         "step2_password": { "type": "css", "value": "#txtSenha" },
-        "step2_submit":   { "type": "css", "value": "#Entrar" }
+        "step2_submit":   { "type": "css", "value": "#Entrar" },
+        "popup_dismiss":  { "type": "css", "value": "#ucAjaxModalPopup1_btnConfirmarPopup" }
       }
     },
     "fasitec": {
