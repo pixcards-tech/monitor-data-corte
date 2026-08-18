@@ -215,6 +215,7 @@ Todas ficam no arquivo `.env` na raiz do projeto. **Nunca commitar o `.env` no r
 | `DAILY_COLLECTION_INTERVAL_MINUTES` | Não | `1` | Pausa em minutos entre cada processadora na rodada principal |
 | `DAILY_COLLECTION_MAX_RETRIES` | Não | `2` | Quantas vezes retentar cada processadora que falhou |
 | `DAILY_COLLECTION_RETRY_DELAY_MINUTES` | Não | `60` | Pausa em minutos antes de cada retry |
+| `DAILY_COLLECTION_PROCESSADORA_TIMEOUT_MINUTES` | Não | `60` | Teto por processadora: estourou → mata a árvore de processos do scraper (Chrome/driver) e a rodada segue para a próxima, registrando a falha (Linux/container; no Windows apenas loga) |
 
 > **Retry não-bloqueante:** quando uma ou mais processadoras falham completamente,
 > cada uma ganha sua própria thread de retry. As esperas de `RETRY_DELAY` correm

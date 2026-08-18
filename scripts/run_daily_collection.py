@@ -15,6 +15,12 @@ Variáveis de ambiente:
     DAILY_COLLECTION_RETRY_JOIN_TIMEOUT_MINUTES
                                          Teto de espera pelos retries antes de
                                          abandonar threads travadas (default: 240)
+    DAILY_COLLECTION_PROCESSADORA_TIMEOUT_MINUTES
+                                         Teto por processadora: estourou → mata a
+                                         árvore de processos do scraper (Chrome/
+                                         driver), a chamada síncrona do Playwright
+                                         levanta exceção e a rodada segue para a
+                                         próxima (default: 60)
 
 Critério de retry:
     - status == "error" (todos os convênios falharam) → retenta
@@ -35,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -80,6 +87,11 @@ RETRY_DELAY_MINUTES: int = _env_int("DAILY_COLLECTION_RETRY_DELAY_MINUTES", 60)
 # pendurado, incidente de 24/07/2026) e é abandonada para o dia ainda fechar
 # com resumo + e-mail.
 RETRY_JOIN_TIMEOUT_MINUTES: int = _env_int("DAILY_COLLECTION_RETRY_JOIN_TIMEOUT_MINUTES", 240)
+# Teto por processadora. A rodada inteira leva ~3h para 12 processadoras; a mais
+# longa (ConsigFácil, 10 convênios + retry técnico de lote) fica bem abaixo de
+# 60min. Estourou → o scraper pendurou no Playwright (incidentes de 24/07 e
+# 15-16/08/2026): converte o travamento infinito em UMA falha registrada.
+PROCESSADORA_TIMEOUT_MINUTES: int = _env_int("DAILY_COLLECTION_PROCESSADORA_TIMEOUT_MINUTES", 60)
 
 # Serializa a execução real de scrapers/storage entre threads de retry.
 # As esperas (time.sleep do delay) ficam de fora do lock e correm em paralelo;
@@ -142,6 +154,88 @@ class _ResultadoProcessadora:
         }
 
 
+# ── Watchdog por processadora ─────────────────────────────────────────────────
+
+def _ppid_de_stat(raw: str) -> int | None:
+    """Extrai o ppid de uma linha de /proc/<pid>/stat.
+
+    Formato: "pid (comm) state ppid ..." — comm pode conter espaço e até
+    parêntese; o rsplit no ÚLTIMO ')' isola os campos com segurança.
+    """
+    try:
+        return int(raw.rsplit(")", 1)[1].split()[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _mapa_ppid() -> dict[int, int]:
+    """pid→ppid de todos os processos visíveis em /proc (POSIX)."""
+    mapa: dict[int, int] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "r") as fh:
+                raw = fh.read()
+        except OSError:
+            continue  # processo morreu entre o listdir e o open
+        ppid = _ppid_de_stat(raw)
+        if ppid is not None:
+            mapa[int(entry)] = ppid
+    return mapa
+
+
+def _descendentes(pid_raiz: int, ppid_por_pid: dict[int, int]) -> list[int]:
+    """Descendentes (diretos e indiretos) de pid_raiz segundo o mapa pid→ppid."""
+    filhos: dict[int, list[int]] = {}
+    for pid, ppid in ppid_por_pid.items():
+        filhos.setdefault(ppid, []).append(pid)
+    resultado: list[int] = []
+    fila = [pid_raiz]
+    while fila:
+        for filho in filhos.get(fila.pop(), []):
+            resultado.append(filho)
+            fila.append(filho)
+    return resultado
+
+
+def _matar_scraper_travado(processadora: str, timeout_min: int) -> None:
+    """Mata a árvore de processos da coleta atual para desbloquear a rodada.
+
+    Com o driver Node/Chrome mortos, a chamada síncrona do Playwright levanta
+    exceção (transport fechado), a thread presa desbloqueia e o runner registra
+    a falha e segue para a próxima processadora — em vez de pendurar a rodada
+    inteira até o watchdog global do scheduler. Como a execução é serializada
+    por _exec_lock, todo descendente deste processo pertence ao scraper atual.
+    """
+    if os.name != "posix":
+        logger.error(
+            "[Runner] ⏱ %s excedeu %d min — sem suporte a kill de árvore fora do "
+            "POSIX; a rodada segue presa até o watchdog global.",
+            processadora, timeout_min,
+        )
+        return
+    try:
+        alvos = _descendentes(os.getpid(), _mapa_ppid())
+    except OSError:
+        logger.exception("[Runner] ⏱ %s — falha ao mapear processos para o kill.", processadora)
+        return
+    mortos = 0
+    for pid in alvos:
+        try:
+            # getattr: SIGKILL não existe no Windows (este ramo é POSIX-only,
+            # mas o fallback evita AttributeError em importações/testes).
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            mortos += 1
+        except (ProcessLookupError, PermissionError):
+            continue
+    logger.error(
+        "[Runner] ⏱ %s excedeu %d min — %d processo(s) do scraper eliminado(s) "
+        "para desbloquear a rodada.",
+        processadora, timeout_min, mortos,
+    )
+
+
 # ── Execução individual ───────────────────────────────────────────────────────
 
 def _executar_processadora(
@@ -158,6 +252,15 @@ def _executar_processadora(
         logger.info(
             "[Runner] → %s (tentativa %d)", resultado.processadora, tentativa
         )
+        # Watchdog local: um scraper pendurado no Playwright não pode segurar a
+        # rodada até o teto global de 420min (foi o que abortou 15-16/08/2026).
+        watchdog = threading.Timer(
+            PROCESSADORA_TIMEOUT_MINUTES * 60,
+            _matar_scraper_travado,
+            args=(resultado.processadora, PROCESSADORA_TIMEOUT_MINUTES),
+        )
+        watchdog.daemon = True
+        watchdog.start()
         try:
             # coletar() persiste tudo mas NÃO envia e-mail — o resumo diário é
             # enviado UMA vez ao final (agregado), não por processadora.
@@ -198,6 +301,9 @@ def _executar_processadora(
             resultado.registrar_erro(str(exc)[:300])
             logger.error("[Runner] ✗ %s — exceção: %s", resultado.processadora, exc)
             return False
+
+        finally:
+            watchdog.cancel()
 
 
 # ── Rodada de execução (principal ou retry) ───────────────────────────────────

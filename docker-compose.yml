@@ -15,6 +15,11 @@ x-app: &app
   build: .
   env_file: .env
   environment: *app-env
+  # tini como PID 1: colhe zumbis adotados. Sem isso, o python do scheduler é o
+  # PID 1 e todo órfão morto (Chrome de coleta abortada) fica zumbi para sempre,
+  # segurando PID até esgotar o namespace (EAGAIN no fork — incidente 15-17/08).
+  init: true
+  restart: unless-stopped
   depends_on:
     db:
       condition: service_healthy
@@ -29,6 +34,7 @@ x-app: &app
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-monitor}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-monitor}
@@ -59,6 +65,10 @@ services:
   # Serviço que agenda e roda a coleta diária (retry paralelo + known_failure).
   runner:
     <<: *app
+    # Backstop: um vazamento de processos (browsers órfãos) estoura este teto e
+    # falha localizado, em vez de esgotar pids/threads da VM inteira. Uma rodada
+    # normal usa <500 tasks (1 Chrome ativo por vez, serializado por lock).
+    pids_limit: 2048
     command: ["python", "scripts/run_scheduler_service.py"]
 
   # API de consulta do histórico no Postgres. Não agenda (COLETA_HORARIO vazio).

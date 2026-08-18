@@ -8,8 +8,16 @@ A coleta roda em SUBPROCESS com timeout duro (watchdog). Motivo: em 24/07/2026
 uma coleta travou dentro do Playwright e nunca retornou; com max_instances=1,
 o APScheduler pulou TODAS as rodadas seguintes por 18 dias, em silêncio. O
 subprocess garante que o job sempre retorna: estourou o tempo → mata o grupo
-de processos inteiro (Chrome incluso), pinga o dead-man's switch em /fail e
-alerta por e-mail (best-effort).
+de processos da coleta, pinga o dead-man's switch em /fail e alerta por
+e-mail (best-effort).
+
+ATENÇÃO — o killpg NÃO alcança o Chrome: o Playwright lança o browser com
+detached=true no Linux (process group próprio). Nos aborts de 15-16/08/2026 os
+Chromes sobreviveram, viraram órfãos do PID 1 e acumularam até esgotar os
+recursos do container — em 17/08 todo launch falhou com EAGAIN ("Resource
+temporarily unavailable (11)"). Por isso, após CADA rodada (normal ou
+abortada), `_varrer_remanescentes()` mata qualquer processo além do init e do
+próprio scheduler e colhe os zumbis. A varredura só roda dentro do container.
 
 Variáveis de ambiente:
     COLETA_HORARIO           Horário diário da coleta no formato HH:MM (ex: "06:00").
@@ -75,7 +83,11 @@ def _timeout_minutos() -> float:
 
 
 def _matar_arvore(proc: subprocess.Popen) -> None:
-    """Mata o subprocess e todos os filhos (Chrome/Playwright) via process group."""
+    """Mata o subprocess da coleta e o driver Node via process group.
+
+    O Chrome fica FORA deste grupo (Playwright o lança com detached=true) —
+    quem o elimina é a `_varrer_remanescentes()` chamada na sequência.
+    """
     try:
         if os.name == "posix":
             os.killpg(proc.pid, signal.SIGKILL)
@@ -89,6 +101,66 @@ def _matar_arvore(proc: subprocess.Popen) -> None:
         proc.wait(timeout=30)
     except Exception:
         logger.warning("[SchedulerService] Processo da coleta não confirmou encerramento.")
+
+
+def _pids_alvo_varredura(pids: list[int], pid_proprio: int) -> list[int]:
+    """PIDs a matar na varredura: todos, exceto o init (PID 1) e o scheduler."""
+    return [p for p in pids if p not in (1, pid_proprio)]
+
+
+def _deve_varrer() -> bool:
+    """Só varre dentro do container do runner, onde qualquer processo além do
+    init e do scheduler é sobra de coleta. Fora do container (dev/host), matar
+    todo PID visível seria catastrófico."""
+    if os.name != "posix":
+        return False
+    return os.getpid() == 1 or Path("/.dockerenv").exists()
+
+
+def _varrer_remanescentes() -> None:
+    """Mata processos que sobraram da rodada (Chrome/node órfãos) e colhe zumbis.
+
+    Duas fontes de sobra: (1) abort do watchdog — o killpg não alcança o Chrome,
+    que está em process group próprio (detached=true do Playwright); (2) rodada
+    normal que abandonou threads de retry travadas — o runner encerra e os
+    browsers dessas threads continuam vivos. Órfãos são adotados pelo PID 1 e,
+    sem varredura, acumulam entre rodadas até esgotar pids/memória (EAGAIN ao
+    lançar o Chrome — incidente de 15-17/08/2026).
+    """
+    if not _deve_varrer():
+        return
+    try:
+        pids = [int(e) for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        logger.exception("[SchedulerService] Varredura: falha ao listar /proc.")
+        return
+    # SIGKILL só existe em POSIX; o fallback mantém o módulo importável (e a
+    # varredura testável) no Windows, onde ela nunca roda de verdade.
+    sig_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    mortos = 0
+    for pid in _pids_alvo_varredura(pids, os.getpid()):
+        try:
+            os.kill(pid, sig_kill)
+            mortos += 1
+        except (ProcessLookupError, PermissionError):
+            continue
+    # Colhe zumbis adotados — essencial quando o scheduler roda como PID 1
+    # (deploys sem init: true); com tini, o loop apenas encerra sem filhos.
+    # getattr: WNOHANG não existe no Windows (mesma razão do sig_kill acima).
+    wnohang = getattr(os, "WNOHANG", 1)
+    while True:
+        try:
+            pid_reaped, _ = os.waitpid(-1, wnohang)
+        except ChildProcessError:
+            break
+        if pid_reaped == 0:
+            break
+    if mortos:
+        logger.warning(
+            "[SchedulerService] Varredura pós-rodada: %d processo(s) remanescente(s) "
+            "eliminado(s) (browsers órfãos da coleta).",
+            mortos,
+        )
 
 
 def _alertar_travamento(minutos: float) -> None:
@@ -113,6 +185,8 @@ def _alertar_travamento(minutos: float) -> None:
         msg = MIMEText(
             f"A coleta diária excedeu o teto de {minutos:.0f} minutos e foi ABORTADA "
             "pelo watchdog do scheduler.\n\n"
+            "Processos remanescentes da coleta (Chrome/driver) foram eliminados na "
+            "varredura pós-rodada — a próxima rodada parte de um ambiente limpo.\n\n"
             "O agendamento segue ativo — a próxima rodada dispara normalmente no "
             "horário de COLETA_HORARIO. Verifique os logs do runner para identificar "
             "onde a coleta travou:\n"
@@ -152,8 +226,9 @@ def _coletar() -> None:
     )
     kwargs: dict = {}
     if os.name == "posix":
-        # Sessão própria → o subprocess vira líder de process group; o kill
-        # atinge também os filhos (Chrome) e não sobra zumbi segurando a rodada.
+        # Sessão própria → o subprocess vira líder de process group; o kill do
+        # watchdog atinge o runner e o driver Node. O Chrome fica fora do grupo
+        # (detached=true do Playwright) — a varredura pós-rodada cobre.
         kwargs["start_new_session"] = True
     try:
         proc = subprocess.Popen([sys.executable, str(_SCRIPT_COLETA)], cwd=str(_RAIZ), **kwargs)
@@ -169,9 +244,16 @@ def _coletar() -> None:
             timeout_s / 60,
         )
         _matar_arvore(proc)
+        # Varre ANTES do alerta: o e-mail afirma que a limpeza já aconteceu.
+        # A segunda passada do finally é idempotente (não sobra alvo).
+        _varrer_remanescentes()
         _alertar_travamento(timeout_s / 60)
     except Exception:
         logger.exception("[SchedulerService] Coleta falhou com exceção não tratada.")
+    finally:
+        # Roda em TODA saída (normal, abort, exceção): sem isso, browsers órfãos
+        # acumulam entre rodadas até o container não conseguir mais dar fork.
+        _varrer_remanescentes()
 
 
 def main() -> int:
