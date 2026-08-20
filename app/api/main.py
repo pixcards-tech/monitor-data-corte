@@ -48,8 +48,23 @@ logging.config.dictConfig({
 
 logger = logging.getLogger(__name__)
 
+def _validar_config_seguranca() -> None:
+    """Fail-closed: recusa subir aberto quando a auth foi declarada obrigatória.
+
+    Chamado no boot (lifespan). Levanta RuntimeError para abortar o start em vez de
+    subir a API/painel sem autenticação num deploy exposto.
+    """
+    if settings.AUTH_REQUIRED and not settings.PANEL_PASSWORD:
+        raise RuntimeError(
+            "AUTH_REQUIRED=True mas PANEL_PASSWORD está vazia — recuso subir com a "
+            "API/painel ABERTOS. Defina PANEL_PASSWORD no .env (ou AUTH_REQUIRED=False "
+            "só em dev local)."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validar_config_seguranca()
     if not settings.SMTP_HOST:
         logger.warning("SMTP_HOST não configurado — notificações por e-mail desabilitadas")
     if settings.REMESSAS_ENABLED:
@@ -88,14 +103,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Pipeline Corte API", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
 
 
 # ── Auth básica (opt-in: ativa só quando PANEL_PASSWORD está setada) ───────────
@@ -138,7 +145,6 @@ def _credenciais_ok(auth_header: str | None) -> bool:
     return u_ok and s_ok
 
 
-@app.middleware("http")
 async def _auth_basica(request, call_next):
     if (settings.PANEL_PASSWORD
             and request.method != "OPTIONS"
@@ -147,6 +153,28 @@ async def _auth_basica(request, call_next):
             and not _sessao_valida(request)):
         return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Monitor de Cortes"'})
     return await call_next(request)
+
+
+# ── Registro dos middlewares (ordem importa) ──────────────────────────────────
+# Starlette: o ÚLTIMO add_middleware é o mais EXTERNO. Queremos, na entrada da
+# request: SecurityHeaders → RateLimit → CORS → Auth → app. Então adicionamos do
+# mais interno (auth) para o mais externo (headers).
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.api.security import rate_limit_middleware, security_headers_middleware
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=_auth_basica)
+app.add_middleware(
+    CORSMiddleware,
+    # Vazio = nenhuma origem cross-site liberada (painel é same-origin). Preencha
+    # CORS_ORIGINS só se um front em outro domínio precisar consumir a API.
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=bool(settings.CORS_ORIGINS),
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+)
+app.add_middleware(BaseHTTPMiddleware, dispatch=rate_limit_middleware)
+app.add_middleware(BaseHTTPMiddleware, dispatch=security_headers_middleware)
 
 
 # ── Painel estático (mini front React/Vite) ───────────────────────────────────
@@ -174,6 +202,11 @@ app.include_router(_remessas_router.router)
 
 @app.get("/health")
 def health() -> dict:
+    # Endpoint público (isento de auth, pingado por uptime). Por padrão devolve só
+    # o status — os caminhos absolutos/cwd só saem com HEALTH_VERBOSE (debug local),
+    # para não vazar layout do filesystem numa API exposta.
+    if not settings.HEALTH_VERBOSE:
+        return {"status": "ok"}
     import os
     from pathlib import Path
     storage = Path(settings.STORAGE_PATH)

@@ -63,6 +63,41 @@ class Settings:
     # Cookie Secure (exige HTTPS) — ligar em produção atrás de TLS.
     COOKIE_SECURE: bool = _bool(os.getenv("COOKIE_SECURE"), False)
 
+    # ── Segurança / exposição pública ──────────────────────────────────────────
+    # Fail-closed: se True e PANEL_PASSWORD estiver vazia, a API RECUSA subir (em vez
+    # de subir aberta). Ligue em qualquer deploy exposto (subdomínio/VM pública).
+    AUTH_REQUIRED: bool = _bool(os.getenv("AUTH_REQUIRED"), False)
+
+    # App atrás de proxy reverso (nginx/caddy) que injeta X-Forwarded-For. Só confie
+    # no XFF quando isso for verdade — senão o IP do rate-limit é forjável pelo cliente.
+    TRUST_PROXY: bool = _bool(os.getenv("TRUST_PROXY"), False)
+
+    # CORS — origens permitidas (separadas por vírgula). Vazio = nenhuma origem
+    # cross-site (o painel é same-origin, servido pela própria API em /painel).
+    CORS_ORIGINS: list[str] = [
+        o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
+    ]
+
+    # Rate limit por IP (janela fixa). Dois baldes: leitura (folgado) e sensível
+    # (auth + mutações). Vazio de janela/limite usa os defaults abaixo.
+    RATE_LIMIT_ENABLED: bool = _bool(os.getenv("RATE_LIMIT_ENABLED"), True)
+    RATE_LIMIT_WINDOW_S: int = int(os.getenv("RATE_LIMIT_WINDOW_S", "60"))
+    RATE_LIMIT_GERAL: int = int(os.getenv("RATE_LIMIT_GERAL", "120"))
+    RATE_LIMIT_SENSIVEL: int = int(os.getenv("RATE_LIMIT_SENSIVEL", "20"))
+
+    # Cabeçalhos de segurança (nosniff, frame-deny, referrer, HSTS, CSP).
+    SECURITY_HEADERS: bool = _bool(os.getenv("SECURITY_HEADERS"), True)
+    # CSP do painel; vazio = não envia o header (relaxe se o painel quebrar).
+    CONTENT_SECURITY_POLICY: str = os.getenv(
+        "CONTENT_SECURITY_POLICY",
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; script-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+    )
+
+    # /health detalhado vaza cwd e caminhos absolutos — só em debug local.
+    HEALTH_VERBOSE: bool = _bool(os.getenv("HEALTH_VERBOSE"), False)
+
     @property
     def REMESSAS_ENABLED(self) -> bool:
         """Remessas é Postgres-only (CRUD multiusuário + auditoria transacional)."""
